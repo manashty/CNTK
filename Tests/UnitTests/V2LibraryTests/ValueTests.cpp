@@ -1367,19 +1367,20 @@ void ValueCreateReadOnlyTest(const DeviceDescriptor device)
     auto data = GenerateSequences<float>(seqLenList, sampleShape);
     auto seq = data[0];
     auto shapeSize = sampleShape.TotalSize();
+    ValuePtr testValue;
+
     BOOST_TEST(seq.size() % shapeSize == 0, "The number of elements in the sequence data must be a multiple of the size of the sample shape");
 
     // Test Value::Create() creates a Value object with correct readOnly setting.
-    auto sequenceLength = seq.size() / shapeSize;
-    std::vector<NDArrayViewPtr> sequencesView(1);
-    auto sequenceDataShape = sampleShape.AppendShape({ sequenceLength });
-
     std::vector<bool> isReadOnlyNDArrayView = { false, true };
     for (int i = 0; i < isReadOnlyNDArrayView.size(); i++)
     {
+        auto sequenceLength = seq.size() / shapeSize;
+        std::vector<NDArrayViewPtr> sequencesView(1);
+        auto sequenceDataShape = sampleShape.AppendShape({ sequenceLength });
         sequencesView[0] = MakeSharedObject<NDArrayView>(sequenceDataShape, seq, isReadOnlyNDArrayView[i]);
         // Test readOnly is true.
-        auto testValue = Value::Create(sampleShape, sequencesView, { true }, device, /*readOnly =*/ true, /*createNewCopy =*/ false);
+        testValue = Value::Create(sampleShape, sequencesView, { true }, device, /*readOnly =*/ true, /*createNewCopy =*/ false);
         BOOST_TEST(testValue->IsReadOnly() == true, "The created value should be read-only.");
         testValue = Value::Create(sampleShape, sequencesView, { true }, device, /*readOnly =*/ true, /*createNewCopy =*/ true);
         BOOST_TEST(testValue->IsReadOnly() == true, "The created value should be read-only.");
@@ -1388,13 +1389,13 @@ void ValueCreateReadOnlyTest(const DeviceDescriptor device)
         BOOST_TEST(testValue->IsReadOnly() == false, "The created value should not be read-only.");
         testValue = Value::Create(sampleShape, sequencesView, { true }, device, /*readOnly =*/ false, /*createNewCopy =*/ true);
         BOOST_TEST(testValue->IsReadOnly() == false, "The created value should not be read-only.");
-
-        // Use Value::CreateSequence() to create a sequence with length 1, and checks the readonly setting.
-        testValue = Value::CreateSequence(sampleShape, seq, true, device, /*readOnly =*/ true);
-        BOOST_TEST(testValue->IsReadOnly() == true, "The created value should be read-only.");
-        testValue = Value::CreateSequence(sampleShape, seq, true, device, /*readOnly =*/ false);
-        BOOST_TEST(testValue->IsReadOnly() == false, "The created value should not be read-only.");
     }
+
+    // Use Value::CreateSequence() to create a sequence with length 1, and checks the readonly setting.
+    testValue = Value::CreateSequence(sampleShape, seq, true, device, /*readOnly =*/ true);
+    BOOST_TEST(testValue->IsReadOnly() == true, "The created value should be read-only.");
+    testValue = Value::CreateSequence(sampleShape, seq, true, device, /*readOnly =*/ false);
+    BOOST_TEST(testValue->IsReadOnly() == false, "The created value should not be read-only.");
 }
 
 struct ValueFixture
