@@ -126,6 +126,9 @@ private:
     static std::vector<int64_t> ToINTS(const std::vector<int>& shape, bool doReverseVec = true);
     static std::vector<int64_t> ToINTS(const std::vector<Axis>& axes);
 
+    static std::vector<float> INTSToVecFloat(const std::vector<int64_t> &ints);
+    static std::vector<int64_t> AxesToINTSArgsortIncrementBatchAxis(const std::vector<Axis> &axes);
+
     //
     // Convert data types from CNTK to ONNX.
     //
@@ -323,6 +326,34 @@ onnx::TypeProto CNTKToONNXHelper::ToTypeProto(const std::vector<Axis>& axes)
     return newShape;
 }
 
+std::vector<int64_t> CNTKToONNXHelper::AxesToINTSArgsortIncrementBatchAxis(const std::vector<Axis> &axes)
+{
+    std::vector<int64_t> index(axes.size());
+    for (int i = 0; i < axes.size(); i++)
+    {
+        index[i] = axes[i].StaticAxisIndex();
+    }
+
+    std::sort(index.begin(), index.end(),
+        [axes](int64_t i1, int64_t i2) {return axes[i1].StaticAxisIndex() < axes[i2].StaticAxisIndex(); });
+
+    for (int i = 0; i < axes.size(); i++)
+        index[i]++;
+
+    return index;
+}
+
+std::vector<float> CNTKToONNXHelper::INTSToVecFloat(const std::vector<int64_t> &ints)
+{
+    std::vector<float> vecFloat(ints.size());
+    for (int i = 0; i < ints.size(); i++)
+    {
+        vecFloat[i] = (float)ints[i];
+    }
+
+    return vecFloat;
+}
+
 std::vector<int64_t> CNTKToONNXHelper::ToINTS(const onnx::TypeProto& shape)
 {
     std::vector<int64_t> newShape;
@@ -398,6 +429,14 @@ std::string CNTKToONNXHelper::ToOPName(const FunctionPtr& src)
                 opName = "MaxPool";
             else
                 opName = "AveragePool";
+        }
+        else if (src->OpName() == L"ReduceElements")
+        {
+            wstring cntkAttributeOpName = (wstring)src->Attributes()[PrimitiveFunction::AttributeNameReductionOpName].Value<wstring>();
+
+            const AttributesMapping& attributeMap = Operators::FindAttributeMap(src->OpName(), cntkAttributeOpName);
+
+            opName = attributeMap.map.at(cntkAttributeOpName);
         }
     }
 
@@ -683,7 +722,18 @@ void CNTKToONNXHelper::CopyAttributes(const FunctionPtr& src, ONNXIR::Node* node
         auto attributesMap = lookup.find(src->OpName())->second.map;
         opName = attributesMap[src->OpName()];
 
-        if (src->OpName() == L"BatchNormalization")
+        if (src->OpName() == L"Clip")
+        {
+            if (src->Inputs().size() != 3)
+            {
+                LogicError("Clip should have 3 inputs.");
+            }
+            float minValue = src->Inputs()[1].Value()->AsScalar<float>();
+            float maxValue = src->Inputs()[2].Value()->AsScalar<float>();
+            node->AddAttribute("min", minValue);
+            node->AddAttribute("max", maxValue);
+        }
+        else if (src->OpName() == L"BatchNormalization")
         {
             auto spatial = (int64_t)((bool)src->Attributes()[L"spatial"].Value<bool>() ? 1 : 0);
             auto normalizationTimeConstant = (float)src->Attributes()[L"normalizationTimeConstant"].Value<double>();
@@ -785,8 +835,10 @@ void CNTKToONNXHelper::CopyAttributes(const FunctionPtr& src, ONNXIR::Node* node
         }
         else if (src->OpName() == L"TransposeAxes")
         {
-            std::vector<Axis> perm = AsVector<Axis>(src->Attributes()[L"axisVec"].Value<std::vector<DictionaryValue>>());
-            node->AddAttribute(attributesMap[L"axisVec"], ToINTS(perm));
+            std::vector<Axis> permutation = AsVector<Axis>(src->Attributes()[L"axisVec"].Value<std::vector<DictionaryValue>>());
+            // CNTK permutation attribute is argsorted. Shall redo argsort (undo) to get the original python/ONNX perm aattribute.
+            std::vector<int64_t> perm = AxesToINTSArgsortIncrementBatchAxis(permutation);
+            node->AddAttribute(attributesMap[L"axisVec"], perm);
         }
         else if (src->OpName() == L"Reshape")
         {
@@ -851,6 +903,17 @@ void CNTKToONNXHelper::CopyAttributes(const FunctionPtr& src, ONNXIR::Node* node
             if (outputRank > 1)
                 LogicError("Output rank other than 1 is not supported.");
         }
+        else if (src->OpName() == L"ROIPooling")
+        {
+            auto roiOutputShape = (NDShape)src->Attributes()[L"roiOutputShape"].Value<NDShape>();
+            auto ints = ToINTS(roiOutputShape, false);
+            std::vector<float> pooled_shape = INTSToVecFloat(ints);
+
+            auto spatialScale = (float)src->Attributes()[L"spatialScale"].Value<double>();
+
+            node->AddAttribute("pooled_shape", pooled_shape);
+            node->AddAttribute("spatial_scale", spatialScale);
+        }
     }
     else
     {
@@ -897,6 +960,21 @@ void CNTKToONNXHelper::CopyAttributes(const FunctionPtr& src, ONNXIR::Node* node
             node->AddAttribute("kernel_shape", ToINTS(kernelShape));
             node->AddAttribute("strides", ToINTS(strides));
             PutAutopadOrPadAttrInNode(node, autoPadding, kernelShape);
+        }
+        else if (src->OpName() == L"ReduceElements")
+        {
+            wstring cntkAttributeOpName = (wstring)src->Attributes()[PrimitiveFunction::AttributeNameReductionOpName].Value<wstring>();
+            const AttributesMapping& attributeMap = Operators::FindAttributeMap(src->OpName(), cntkAttributeOpName);
+
+            auto keepReducedDimensions = (int64_t)((bool)src->Attributes()[L"reductionKeepDimensions"].Value<bool>() ? 1 : 0);
+            std::vector<Axis> reductionAxes;
+            if (src->Attributes().Contains(L"axisVec"))
+                reductionAxes = AsVector<Axis>(src->Attributes()[L"axisVec"].Value<std::vector<DictionaryValue>>());
+            else if (src->Attributes().Contains(L"axis"))
+                reductionAxes.push_back((Axis)(src->Attributes()[L"axis"].Value<Axis>()));
+
+            node->AddAttribute(attributeMap.map.at(L"reductionKeepDimensions"), keepReducedDimensions);
+            node->AddAttribute("axes", ToINTS(reductionAxes));
         }
     }
 }

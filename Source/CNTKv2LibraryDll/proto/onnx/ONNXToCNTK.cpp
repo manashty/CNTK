@@ -76,6 +76,9 @@ private:
     static std::vector<int> VecInt64ToVecInt(const std::vector<int64_t> &vecInt64);
     static std::vector<int64_t> VecIntToVecInt64(const std::vector<int> &vecInt);
 
+    static std::vector<size_t> VecFloatToVecSize_t(const std::vector<float> &vecFloat);
+    static std::vector<Axis> ArgsortAxis(const std::vector<Axis> &permutation);
+
     static float GetNamedAttributeAsFloat(const Node *node, const string &attributeName);
     static float GetNamedAttributeAsFloat(const Node *node, const string &attributeName, float defaultValue);
 
@@ -84,6 +87,9 @@ private:
 
     static std::vector<int64_t> GetNamedAttributeAsInt64Vec(const Node *node, const string &attributeName);
     static std::vector<int64_t> GetNamedAttributeAsInt64Vec(const Node *node, const string &attributeName, const std::vector<int64_t>& defaultValue);
+
+    static std::vector<float> GetNamedAttributeAsFloatVec(const Node *node, const string &attributeName);
+    static std::vector<float> GetNamedAttributeAsFloatVec(const Node *node, const string &attributeName, const std::vector<float>& defaultValue);
 
     static std::vector<bool> GetAutoPaddingWithSymmetryConversion(const Node *node, int strideRank,
         const string &onnxAutoPaddingAttributeName, const std::vector<bool> &defaultValue);
@@ -634,6 +640,27 @@ std::vector<int64_t> ONNXToCNTKHelper::GetNamedAttributeAsInt64Vec(const Node *n
     return intVector;
 }
 
+std::vector<float> ONNXToCNTKHelper::GetNamedAttributeAsFloatVec(const Node *node, const string &attributeName)
+{
+    NodeAttributes::const_iterator itValue = FindAttributeIterator(node, attributeName, true);
+    const AttributeProto &attributeProto = itValue->second;
+    std::vector<float> floatVector(attributeProto.floats().begin(), attributeProto.floats().end());
+    return floatVector;
+}
+
+std::vector<float> ONNXToCNTKHelper::GetNamedAttributeAsFloatVec(const Node *node, const string &attributeName,
+    const std::vector<float>& defaultValue)
+{
+    NodeAttributes::const_iterator itValue = FindAttributeIterator(node, attributeName, false);
+    if (itValue == node->GetAttributes().end())
+    {
+        return defaultValue;
+    }
+    const AttributeProto &attributeProto = itValue->second;
+    std::vector<float> floatVector(attributeProto.floats().begin(), attributeProto.floats().end());
+    return floatVector;
+}
+
 std::vector<int> ONNXToCNTKHelper::VecInt64ToVecInt(const std::vector<int64_t> &vecInt64)
 {
     std::vector<int> vecInt(vecInt64.size());
@@ -654,6 +681,26 @@ std::vector<int64_t> ONNXToCNTKHelper::VecIntToVecInt64(const std::vector<int> &
     }
 
     return vecInt64;
+}
+
+std::vector<size_t> ONNXToCNTKHelper::VecFloatToVecSize_t(const std::vector<float> &vecFloat)
+{
+    std::vector<size_t> vecSize_t(vecFloat.size());
+    for (int i = 0; i < vecFloat.size(); i++)
+    {
+        vecSize_t[i] = (size_t)vecFloat[i];
+    }
+
+    return vecSize_t;
+}
+
+std::vector<Axis> ONNXToCNTKHelper::ArgsortAxis(const std::vector<Axis> &permutation)
+{
+    std::vector<Axis> argsortedPermutation = permutation;
+    std::sort(argsortedPermutation.begin(), argsortedPermutation.end(),
+        [permutation](Axis i1, Axis i2) {
+        return permutation[i1.StaticAxisIndex()].StaticAxisIndex() < permutation[i2.StaticAxisIndex()].StaticAxisIndex(); });
+    return argsortedPermutation;
 }
 
 namespace CNTK
@@ -779,7 +826,45 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
 {
     string onnxOpName = node->OpType();
     
-    if (onnxOpName == "FC")
+    if (onnxOpName == "Flatten")
+    {
+        std::vector<Axis> axes = GetNamedAttributeAsAxis(node, "axis");
+        if (axes.size() != 1)
+        {
+            LogicError("Flatten op should has one axis.");
+        }
+
+        size_t dim0 = inputs[0].Shape().SubShape(0, axes[0].StaticAxisIndex() - 1).TotalSize();
+        size_t dim1 = inputs[0].Shape().SubShape(axes[0].StaticAxisIndex()).TotalSize();
+        NDShape newShape({ dim0 , dim1 });
+        FunctionPtr cntkFunction = Reshape(inputs[0], newShape, ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "Equal")
+    {
+        FunctionPtr cntkFunction = Equal(inputs[0], inputs[1], ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "Greater")
+    {
+        FunctionPtr cntkFunction = Greater(inputs[0], inputs[1], ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "Less")
+    {
+        FunctionPtr cntkFunction = Less(inputs[0], inputs[1], ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "Clip")
+    {
+        double minValue = GetNamedAttributeAsFloat(node, "min");
+        double maxValue = GetNamedAttributeAsFloat(node, "max");
+        Constant minVariable = Constant::Scalar(DataType::Float, minValue);
+        Constant maxVariable = Constant::Scalar(DataType::Float, maxValue);
+        FunctionPtr cntkFunction = Clip(inputs[0], minVariable, maxVariable, ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "FC")
     {
         // TODO: this is experimental code to load Facebook Caffe models. 
         // "FC" is not in ONNX standard. Two cases need to be handled with 
@@ -849,6 +934,18 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
         FunctionPtr cntkFunction = Pooling(inputs[0],
             onnxOpName == "GlobalAveragePool" ? PoolingType::Average : PoolingType::Max, 
             NDShape::Unknown(), strides, autoPadding, ceilOutDim, includePad, ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "MaxRoiPool")
+    {
+        // ONNX spec is list of ints - however current IR spec is AttrType::AttributeProto_AttributeType_FLOATS
+        std::vector<float> pooled_shape = GetNamedAttributeAsFloatVec(node, "pooled_shape");
+        std::vector<size_t> dims = VecFloatToVecSize_t(pooled_shape);
+        NDShape roiOutputShape(dims);
+
+        float spatialScale = GetNamedAttributeAsFloat(node, "spatial_scale");
+        FunctionPtr cntkFunction = ROIPooling(inputs[0], inputs[1], 
+            PoolingType::Max, roiOutputShape, spatialScale, ToWString(node->Name()));
         return cntkFunction;
     }
     else if (onnxOpName == "Conv")
@@ -1078,10 +1175,9 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
     }
     else if (onnxOpName == "Selu")
     {
-        // TODO: get from node's attributes
-        double scale = 1;
-        double alpha = 0.5;
-        FunctionPtr cntkFunction = SELU(inputs[0], scale, alpha, ToWString(node->Name()));
+        double alpha = (double)GetNamedAttributeAsFloat(node, "alpha", 1.6732F);
+        double gamma= (double)GetNamedAttributeAsFloat(node, "gamma", 1.0507F);
+        FunctionPtr cntkFunction = SELU(inputs[0], gamma, alpha, ToWString(node->Name()));
         return cntkFunction;
     }
     else if (onnxOpName == "Elu")
@@ -1106,7 +1202,8 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
     }
     else if (onnxOpName == "Pow")
     {
-        return nullptr;
+        FunctionPtr cntkFunction = Pow(inputs[0], inputs[1], ToWString(node->Name()));
+        return cntkFunction;
     }
     else if (onnxOpName == "MatMul")
     {
@@ -1138,9 +1235,20 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
         // not specified in Operators.cpp
         return nullptr;
     }
+    else if (onnxOpName == "Hardmax")
+    {
+        FunctionPtr cntkFunction = Hardmax(inputs[0], ToWString(node->Name()));
+        return cntkFunction;
+    }
     else if (onnxOpName == "Softmax")
     {
         FunctionPtr cntkFunction = Softmax(inputs[0], ToWString(node->Name()));
+        return cntkFunction;
+    }
+    else if (onnxOpName == "Softplus")
+    {
+        // CNTK Softplus pre-append a input placehold so has to use inputs[1]
+        FunctionPtr cntkFunction = Softplus(inputs[1], ToWString(node->Name()));
         return cntkFunction;
     }
     else if (onnxOpName == "ReduceMax")
@@ -1263,7 +1371,9 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
     }
     else if (onnxOpName == "Transpose")
     {
-        FunctionPtr cntkFunction = Transpose(inputs[0], ToWString(node->Name()));
+        std::vector<Axis> permutation = GetNamedAttributeAsAxis(node, "perm");
+        std::vector<Axis> argsirtedPermutation = ArgsortAxis(permutation);
+        FunctionPtr cntkFunction = Transpose(inputs[0], argsirtedPermutation, ToWString(node->Name()));
         return cntkFunction;
     }
     else if (onnxOpName == "Gather")
