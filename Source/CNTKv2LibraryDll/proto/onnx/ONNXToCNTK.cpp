@@ -1393,6 +1393,8 @@ FunctionPtr ONNXToCNTKHelper::CreateFunction(const Node *node, const std::vector
     else if (onnxOpName == "Transpose")
     {
         std::vector<Axis> permutation = GetNamedAttributeAsAxis(node, "perm");
+        // remove batch axis
+        permutation.erase(permutation.begin());
         std::vector<Axis> argsirtedPermutation = ArgsortAxis(permutation);
         FunctionPtr cntkFunction = Transpose(inputs[0], argsirtedPermutation, ToWString(node->Name()));
         return cntkFunction;

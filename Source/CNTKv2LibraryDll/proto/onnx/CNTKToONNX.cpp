@@ -340,6 +340,8 @@ std::vector<int64_t> CNTKToONNXHelper::AxesToINTSArgsortIncrementBatchAxis(const
     for (int i = 0; i < axes.size(); i++)
         index[i]++;
 
+    // add batch axis
+    index.insert(index.begin(), 0);
     return index;
 }
 

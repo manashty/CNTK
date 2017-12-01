@@ -12,11 +12,13 @@ import pytest
 #helpers
 #############
 def save_validation2(x1, x2, y, file_path):
-    constant_input1 = C.layers.reshape(C.constant(x1, 'input1'), (x1.size))
-    constant_input2 = C.layers.reshape(C.constant(x2, 'input2'), (x2.size))
-    constant_output = C.layers.reshape(C.constant(y, 'output'), (y.size))
-    validation_data = C.splice(constant_input1, constant_input2, constant_output)
-    validation_data.save(file_path, format=C.ModelFormat.ONNX)
+    constant_input1 = np.reshape(x1, (x1.size))
+    constant_input2 = np.reshape(x2, (x2.size))
+    constant_output = np.reshape(y, (y.size))
+    validation_data = np.hstack((constant_input1, constant_input2, constant_output))
+    c = C.input_variable((1))
+    model = c * validation_data
+    model.save(file_path, format=C.ModelFormat.ONNX)
 
 def save_validation(x,y, file_path):
     constant_input = np.reshape(x, (x.size))
